@@ -84,6 +84,9 @@ class MfUsgCln(Package):
         A table of the node properties. Total rows equal the total number
         of CLN-nodes (NCLNNDS). The first 6 fields is required for running
         model. Rest of fields have default value of 0.
+    node_well_names : list of str, optional
+        Trailing well name identifiers for each CLN node (e.g. "CCH-1").
+        Length must equal NCLNNDS. Defaults to empty strings.
     nclngwc : int, optional
         is the number of CLN to porous-medium grid-block connections present
         in the model. A CLN node need not be connected to any groundwater node.
@@ -170,6 +173,7 @@ class MfUsgCln(Package):
         iac_cln=None,  # number of connections for each node (sum(IAC)=NJAG
         ja_cln=None,  # node connections
         node_prop=None,  # node properties
+        node_well_names=None,  # trailing well name identifiers
         nclngwc=None,  # number of CLN-GW connections
         cln_gwc=None,  # CLN-GW connections
         nconduityp=1,  # number of circular conduit types
@@ -254,6 +258,11 @@ class MfUsgCln(Package):
         self.node_prop = self._make_recarray(
             node_prop, dtype=MfUsgClnDtypes.get_clnnode_dtype()
         )
+
+        if node_well_names is not None:
+            self.node_well_names = list(node_well_names)
+        else:
+            self.node_well_names = [""] * self.nclnnds
 
         # Define CLN groundwater connections
         if nclngwc is None:
@@ -544,9 +553,13 @@ class MfUsgCln(Package):
             f_cln.write(self.ja_cln.get_file_entry())
 
         free = self.parent.free_format_input
-        np.savetxt(
-            f_cln, self.node_prop, fmt=fmt_string(self.node_prop, free), delimiter=""
-        )
+        fmt = fmt_string(self.node_prop, free)
+        has_names = any(n for n in self.node_well_names)
+        for i, rec in enumerate(self.node_prop):
+            line = fmt % tuple(rec)
+            if has_names and i < len(self.node_well_names) and self.node_well_names[i]:
+                line = line.rstrip() + f"           {self.node_well_names[i]}"
+            f_cln.write(line + "\n")
 
         np.savetxt(
             f_cln, self.cln_gwc, fmt=fmt_string(self.cln_gwc, free), delimiter=""
@@ -688,20 +701,20 @@ class MfUsgCln(Package):
 
         if model.verbose:
             print("  Reading node_prop...")
-        node_prop = cls._read_prop(f, nclnnds)
+        node_prop, node_well_names = cls._read_prop(f, nclnnds, capture_names=True)
 
         if model.verbose:
             print("   Reading cln_gwc...")
-        cln_gwc = cls._read_prop(f, nclngwc)
+        cln_gwc, _ = cls._read_prop(f, nclngwc)
         if model.verbose:
             print("   Reading cln_circ...")
-        cln_circ = cls._read_prop(f, nconduityp)
+        cln_circ, _ = cls._read_prop(f, nconduityp)
 
         cln_rect = None
         if nrectyp > 0:
             if model.verbose:
                 print("   Reading cln_rect...")
-            cln_rect = cls._read_prop(f, nrectyp)
+            cln_rect, _ = cls._read_prop(f, nrectyp)
 
         if model.verbose:
             print("   Reading ibound...")
@@ -756,6 +769,7 @@ class MfUsgCln(Package):
             iac_cln=iac_cln,
             ja_cln=ja_cln,
             node_prop=node_prop,
+            node_well_names=node_well_names,
             nclngwc=nclngwc,
             cln_gwc=cln_gwc,
             nconduityp=nconduityp,
@@ -993,7 +1007,7 @@ class MfUsgCln(Package):
         return np.array(ptemp, dtype)
 
     @classmethod
-    def _read_prop(cls, f_obj, nrec):
+    def _read_prop(cls, f_obj, nrec, capture_names=False):
         """
         Read the property tables (node_prop, cln_gwc, cln_circ, cln_rect).
 
@@ -1001,12 +1015,17 @@ class MfUsgCln(Package):
         ----------
         f_obj : package file handle
         nrec : number of rows in the table
+        capture_names : bool
+            If True, capture trailing non-numeric tokens as well names.
 
         Returns
         -------
-        A list of lists with length of nrec
+        ptemp : list of lists with length of nrec
+        names : list of str or None
+            Well names if capture_names is True, else None.
         """
         ptemp = []
+        names = [] if capture_names else None
 
         for _ in range(nrec):
             line = f_obj.readline()
@@ -1014,4 +1033,8 @@ class MfUsgCln(Package):
             prop = [float(item) for item in line_text if cls._is_float(item)]
             ptemp.append(prop)
 
-        return ptemp
+            if capture_names:
+                non_numeric = [t for t in line_text if not cls._is_float(t)]
+                names.append(non_numeric[-1] if non_numeric else "")
+
+        return ptemp, names
